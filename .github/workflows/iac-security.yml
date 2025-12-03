@@ -1,0 +1,211 @@
+name: IaC Security Scanning
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  pull-requests: write
+
+jobs:
+  checkov:
+    name: Checkov - Multi-IaC Scanner
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+      
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: .
+          framework: terraform,kubernetes
+          output_format: cli,sarif
+          output_file_path: console,checkov-results.sarif
+          soft_fail: false
+          download_external_modules: true
+      
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: checkov-results.sarif
+          category: checkov
+      
+      - name: Create summary
+        if: always()
+        run: |
+          echo "# 🏗️ Checkov Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Verificação completa de IaC para Terraform e Kubernetes" >> $GITHUB_STEP_SUMMARY
+
+  tfsec:
+    name: tfsec - Terraform Security
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+      
+      - name: Run tfsec
+        uses: aquasecurity/tfsec-action@v1.0.0
+        with:
+          working_directory: terraform/
+          format: sarif
+          sarif_file: tfsec-results.sarif
+          soft_fail: false
+      
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: tfsec-results.sarif
+          category: tfsec
+
+  terrascan:
+    name: Terrascan - Policy Enforcement
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+      
+      - name: Run Terrascan
+        uses: tenable/terrascan-action@main
+        with:
+          iac_type: 'terraform'
+          iac_dir: 'terraform/'
+          policy_type: 'aws'
+          sarif_upload: true
+      
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: terrascan.sarif
+          category: terrascan
+
+  kics:
+    name: KICS - Kubernetes Scanner
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+      
+      - name: Run KICS
+        uses: checkmarx/kics-github-action@master
+        with:
+          path: kubernetes/
+          output_formats: 'json,sarif'
+          output_path: kics-results/
+          fail_on: high
+      
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: kics-results/results.sarif
+          category: kics
+
+  kubesec:
+    name: Kubesec - K8s Security
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+      
+      - name: Run Kubesec
+        run: |
+          wget https://github.com/controlplaneio/kubesec/releases/download/v2.13.0/kubesec_linux_amd64.tar.gz
+          tar -xvf kubesec_linux_amd64.tar.gz
+          
+          for file in kubernetes/*.yaml; do
+            echo "Scanning $file..."
+            ./kubesec scan "$file" || true
+          done
+
+  opa-conftest:
+    name: OPA Conftest - Policy as Code
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+      
+      - name: Install Conftest
+        run: |
+          wget https://github.com/open-policy-agent/conftest/releases/download/v0.45.0/conftest_0.45.0_Linux_x86_64.tar.gz
+          tar xzf conftest_0.45.0_Linux_x86_64.tar.gz
+          sudo mv conftest /usr/local/bin/
+      
+      - name: Test Terraform with custom policies
+        run: |
+          if [ -d "policies/" ]; then
+            conftest test terraform/*.tf -p policies/ --all-namespaces
+          else
+            echo "No custom policies found"
+          fi
+        continue-on-error: true
+
+  drift-detection:
+    name: Terraform Drift Detection
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.0
+      
+      - name: Terraform Init
+        run: |
+          cd terraform/
+          terraform init -backend=false
+      
+      - name: Terraform Plan (Drift Check)
+        run: |
+          cd terraform/
+          terraform plan -detailed-exitcode || echo "Drift detected!"
+        continue-on-error: true
+
+  scan-summary:
+    name: Security Scan Summary
+    needs: [checkov, tfsec, terrascan, kics]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Create comprehensive summary
+        run: |
+          echo "# 🔒 IaC Security Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Scanner Status" >> $GITHUB_STEP_SUMMARY
+          echo "- Checkov: ${{ needs.checkov.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- tfsec: ${{ needs.tfsec.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Terrascan: ${{ needs.terrascan.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- KICS: ${{ needs.kics.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ needs.checkov.result }}" == "failure" ] || \
+             [ "${{ needs.tfsec.result }}" == "failure" ] || \
+             [ "${{ needs.terrascan.result }}" == "failure" ] || \
+             [ "${{ needs.kics.result }}" == "failure" ]; then
+            echo "❌ **SECURITY ISSUES DETECTED**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Revise os relatórios de segurança na aba Security" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          else
+            echo "✅ **ALL SCANS PASSED**" >> $GITHUB_STEP_SUMMARY
+          fi

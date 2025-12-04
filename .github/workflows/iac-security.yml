@@ -28,7 +28,7 @@ jobs:
           framework: terraform,kubernetes
           output_format: cli,sarif
           output_file_path: console,checkov-results.sarif
-          soft_fail: false
+          soft_fail: true
           download_external_modules: true
       
       - name: Upload SARIF

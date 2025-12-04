@@ -58,14 +58,14 @@ jobs:
         with:
           working_directory: terraform/
           format: sarif
-          sarif_file: terraform/tfsec-results.sarif
+          sarif_file: tfsec-results.sarif
           soft_fail: false
       
       - name: Upload SARIF
         uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
-          sarif_file: terraform/tfsec-results.sarif
+          sarif_file: tfsec-results.sarif
           category: tfsec
 
   terrascan:

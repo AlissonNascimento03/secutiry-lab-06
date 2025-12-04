@@ -65,7 +65,7 @@ jobs:
         uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
-         sarif_file: tfsec-results.sarif
+         sarif_file: terraform/tfsec-results.sarif
          category: tfsec
 
   terrascan:
